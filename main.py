@@ -25,7 +25,6 @@ with app.app_context():
 @app.route('/api/blog', methods=['POST'])
 def create_post():
     try:
-        print(request.json['author'])
         validate(request.json, schema=schema)
         new_post = Post(author=request.json['author'], text=request.json['text'])
         db.session.add(new_post)
