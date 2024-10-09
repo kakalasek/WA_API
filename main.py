@@ -46,16 +46,40 @@ def get_all_posts():
     return posts, 200
 
 @app.route('/api/blog/<int:blog_id>', methods=['GET'])
-def get_post():
-    pass
+def get_post(blog_id: int):
+    post = Post.query.get(blog_id)
+    if not post:
+        return "No post was found with this id", 400
+
+    post_json = {
+        'author': post.author,
+        'date': post.create_date,
+        'text': post.text
+    }    
+
+    return post_json, 200
 
 @app.route('/api/blog/<int:blog_id>', methods=['DELETE'])
-def delete_post():
-    pass
+def delete_post(blog_id: int):
+    deleted = Post.query.filter_by(id=blog_id).delete()
+    db.session.commit()
+    if not deleted:
+        return "No rows were deleteed", 200
+    return "Post successfuly deleted", 200    
 
 @app.route('/api/blog/<int:blog_id>', methods=['PATCH'])
-def update_post():
-    pass
+def update_post(blog_id: int):
+    new_text = request.get_json()['text']
+
+    post = Post.query.filter_by(id=blog_id).first()
+
+    if not post:
+        return "No post was found with this id", 400
+
+    post.text = new_text
+    db.session.commit()
+
+    return "Post successfuly updated", 200
 
 if __name__ == "__main__":
     app.run(port=5020, debug=True)
