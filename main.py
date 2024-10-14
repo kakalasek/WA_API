@@ -1,9 +1,8 @@
 from flask import Flask, request, jsonify
-from flask_login import LoginManager
+from flask_login import LoginManager, login_user
 from jsonschema import validate
 from models import db, Post, User
 import os
-import json
 
 schema = {
     "type": "object",
@@ -18,7 +17,7 @@ basedir = os.path.abspath(os.path.dirname(__file__))
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = 'sqlite:///' + os.path.join(basedir, 'database.db')
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config
+app.config["SECRET_KEY"] = os.urandom(24)
 
 db.init_app(app)
 with app.app_context():
@@ -28,12 +27,30 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 
 @login_manager.user_loader
-def loader_user(user_id):
+def load_user(user_id):
     return User.query.get(user_id)
 
-@app.route('/api/login')
+@app.route('/api/register', methods=['POST'])
+def register():
+    if User.query.filter_by(username=request.form.get("username")).first():
+        return "User already registered", 400
+    
+    user = User(username=request.form.get("username"))
+
+    db.session.add(user)
+    db.session.commit()
+
+    return "User registered successfuly", 201
+
+@app.route('/api/login', methods=['POST'])
 def login():
-    pass
+    username = request.form.get("username")
+
+    if not User.query.filter_by(username=username).first():
+        return "This user does not exist", 400
+
+    user = User.query.filter_by(username=username).first()
+    login_user(user)
 
 @app.route('/api/blog', methods=['POST'])
 def create_post():
