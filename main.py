@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
+from flask_login import LoginManager
 from jsonschema import validate
-from models import db, Post
+from models import db, Post, User
 import os
 import json
 
@@ -17,10 +18,22 @@ basedir = os.path.abspath(os.path.dirname(__file__))
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = 'sqlite:///' + os.path.join(basedir, 'database.db')
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config
 
 db.init_app(app)
 with app.app_context():
     db.create_all()
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+
+@login_manager.user_loader
+def loader_user(user_id):
+    return User.query.get(user_id)
+
+@app.route('/api/login')
+def login():
+    pass
 
 @app.route('/api/blog', methods=['POST'])
 def create_post():
