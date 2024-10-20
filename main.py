@@ -1,16 +1,8 @@
-from flask import Flask, request, jsonify
-from flask_login import LoginManager, login_user
-from jsonschema import validate
+from flask import Flask, request
+from flask_httpauth import HTTPBasicAuth
 from models import db, Post, User
 import os
-
-schema = {
-    "type": "object",
-    "properties": {
-        "author": {"type": "string"},
-        "text": {"type": "string"}
-    }
-}
+from werkzeug.security import generate_password_hash, check_password_hash
 
 basedir = os.path.abspath(os.path.dirname(__file__))
 
@@ -19,44 +11,49 @@ app.config["SQLALCHEMY_DATABASE_URI"] = 'sqlite:///' + os.path.join(basedir, 'da
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SECRET_KEY"] = os.urandom(24)
 
+auth = HTTPBasicAuth()
+
 db.init_app(app)
 with app.app_context():
     db.create_all()
 
-login_manager = LoginManager()
-login_manager.init_app(app)
-
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(user_id)
+@auth.verify_password
+def verify_password(username, password):
+    user = User.query.filter_by(username=username).first()
+    if user and check_password_hash(user.password, password):
+        return username
 
 @app.route('/api/register', methods=['POST'])
 def register():
-    if User.query.filter_by(username=request.form.get("username")).first():
+    if User.query.filter_by(username=request.json["username"]).first():
         return "User already registered", 400
     
-    user = User(username=request.form.get("username"))
+    user = User(username=request.json["username"], password=generate_password_hash(request.json["password"]))
 
     db.session.add(user)
     db.session.commit()
 
     return "User registered successfuly", 201
 
-@app.route('/api/login', methods=['POST'])
-def login():
-    username = request.form.get("username")
+@app.route('/api/exists', methods=['POST'])
+def exists():
+    if not User.query.filter_by(username=request.json["username"]).first():
+        return "User not registered", 400
 
-    if not User.query.filter_by(username=username).first():
-        return "This user does not exist", 400
+    user = User.query.filter_by(username=request.json["username"]).first()
 
-    user = User.query.filter_by(username=username).first()
-    login_user(user)
+    if not check_password_hash(user.password, request.json["password"]):
+        return "Wrong password", 400
+    
+    return "User exists", 200
+
 
 @app.route('/api/blog', methods=['POST'])
+@auth.login_required
 def create_post():
     try:
-        validate(request.json, schema=schema)
-        new_post = Post(author=request.json['author'], text=request.json['text'])
+        user = User.query.filter_by(username=auth.current_user()).first()
+        new_post = Post(user_id=user.id, text=request.json['text'])
         db.session.add(new_post)
         db.session.commit()
         return "Post created successfuly", 201
@@ -68,21 +65,26 @@ def create_post():
 def get_all_posts():
     posts = [] 
     for post in Post.query.all():
+        author = User.query.filter_by(id=post.user_id).first()
         posts.append({
-            'author': post.author,
+            'author': author.username,
             'date': post.create_date,
             'text': post.text
         })
     return posts, 200
 
 @app.route('/api/blog/<int:blog_id>', methods=['GET'])
+@auth.login_required
 def get_post(blog_id: int):
+    user = User.query.filter_by(username=auth.current_user()).first()
     post = Post.query.get(blog_id)
     if not post:
         return "No post was found with this id", 400
+    if post.user_id != user.id:
+        return "You can only access your posts", 401
 
     post_json = {
-        'author': post.author,
+        'author': user.username,
         'date': post.create_date,
         'text': post.text
     }    
@@ -90,21 +92,32 @@ def get_post(blog_id: int):
     return post_json, 200
 
 @app.route('/api/blog/<int:blog_id>', methods=['DELETE'])
+@auth.login_required
 def delete_post(blog_id: int):
-    deleted = Post.query.filter_by(id=blog_id).delete()
+    user = User.query.filter_by(username=auth.current_user()).first()
+    post = Post.query.get(blog_id)
+
+    if not post:
+        return "No post was found with this id", 400
+    if post.user_id != user.id:
+        return "You can only delete your posts", 401
+
+    Post.query.filter_by(id=blog_id).delete()
     db.session.commit()
-    if not deleted:
-        return "No rows were deleteed", 200
     return "Post successfuly deleted", 200    
 
 @app.route('/api/blog/<int:blog_id>', methods=['PATCH'])
+@auth.login_required
 def update_post(blog_id: int):
     new_text = request.get_json()['text']
 
+    user = User.query.filter_by(username=auth.current_user()).first()
     post = Post.query.filter_by(id=blog_id).first()
 
     if not post:
         return "No post was found with this id", 400
+    if post.user_id != user.id:
+        return "You can only update your posts", 401
 
     post.text = new_text
     db.session.commit()
