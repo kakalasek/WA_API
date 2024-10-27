@@ -1,128 +1,66 @@
-from flask import Flask, request
-from flask_httpauth import HTTPBasicAuth
-from models import db, Post, User
-import os
-from werkzeug.security import generate_password_hash, check_password_hash
+from flask import Flask, jsonify
+from extensions import db, jwt
+from auth import auth_bp
+from users import user_bp
+from posts import post_bp
+from about import about_bp
+from models import User, TokenBlockList
 
-basedir = os.path.abspath(os.path.dirname(__file__))
+def create_app():
+    app = Flask(__name__)
 
-app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = 'sqlite:///' + os.path.join(basedir, 'database.db')
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["SECRET_KEY"] = os.urandom(24)
+    app.config['SECRET_KEY'] = 'kdjfkshfiehkshdhfkhdfhdsh'
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///db.sqlite3'
+    app.config['SQLALCHEMY_ECHO'] = True
+    app.config['JWT_SECRET_KEY'] = 'dkfh483y548dhfkly203894293kdhf2'
 
-auth = HTTPBasicAuth()
+    # Initialize extensions
+    db.init_app(app)
+    with app.app_context():
+        db.create_all()
+    jwt.init_app(app)
 
-db.init_app(app)
-with app.app_context():
-    db.create_all()
+    # Register blueprints
+    app.register_blueprint(auth_bp, url_prefix='/api/auth')
+    app.register_blueprint(user_bp, url_prefix='/api/users')
+    app.register_blueprint(post_bp, url_prefix='/api/blog')
+    app.register_blueprint(about_bp, url_prefix='/api/about')
 
-@auth.verify_password
-def verify_password(username, password):
-    user = User.query.filter_by(username=username).first()
-    if user and check_password_hash(user.password, password):
-        return username
+    # Load user
+    @jwt.user_lookup_loader
+    def user_lookup_callback(_jwt_headers, jwt_data):
+        
+        identity = jwt_data['sub']
 
-@app.route('/api/register', methods=['POST'])
-def register():
-    if User.query.filter_by(username=request.json["username"]).first():
-        return "User already registered", 400
+        return User.query.filter_by(username=identity).one_or_none()
     
-    user = User(username=request.json["username"], password=generate_password_hash(request.json["password"]))
+    # Additional claims
+    @jwt.additional_claims_loader
+    def make_additional_claims(identity):
+        
+        if identity == "JohnDoe":
+            return {"is_admin": True}
+        return ({"is_admin": False})
 
-    db.session.add(user)
-    db.session.commit()
-
-    return "User registered successfuly", 201
-
-@app.route('/api/exists', methods=['POST'])
-def exists():
-    if not User.query.filter_by(username=request.json["username"]).first():
-        return "User not registered", 400
-
-    user = User.query.filter_by(username=request.json["username"]).first()
-
-    if not check_password_hash(user.password, request.json["password"]):
-        return "Wrong password", 400
+    # JWT error handlers
+    @jwt.expired_token_loader
+    def expired_token_callback(jwt_header, jwt_data):
+        return jsonify({"message": "Token has expired", "error":"token_expired"}), 401
     
-    return "User exists", 200
-
-
-@app.route('/api/blog', methods=['POST'])
-@auth.login_required
-def create_post():
-    try:
-        user = User.query.filter_by(username=auth.current_user()).first()
-        new_post = Post(user_id=user.id, text=request.json['text'])
-        db.session.add(new_post)
-        db.session.commit()
-        return "Post created successfuly", 201
-    except Exception as e:
-        return "There has been a problem with creating your post", 400
+    @jwt.invalid_token_loader
+    def invalid_token_callback(error):
+        return jsonify({"message":"Signature verification failed", "error":"invalid_token"}), 401
     
+    @jwt.unauthorized_loader
+    def missing_token_callback(error):
+        return jsonify({"message":"Request does not contain a valid token", "error":"authorization_required"}), 401
+    
+    @jwt.token_in_blocklist_loader
+    def token_in_blocklist_callback(jwt_header, jwt_data):
+        jti = jwt_data['jti']
 
-@app.route('/api/blog', methods=['GET'])
-def get_all_posts():
-    posts = [] 
-    for post in Post.query.all():
-        author = User.query.filter_by(id=post.user_id).first()
-        posts.append({
-            'author': author.username,
-            'date': post.create_date,
-            'text': post.text
-        })
-    return posts, 200
+        token = db.session.query(TokenBlockList).filter(TokenBlockList.jti == jti).scalar()
 
-@app.route('/api/blog/<int:blog_id>', methods=['GET'])
-@auth.login_required
-def get_post(blog_id: int):
-    user = User.query.filter_by(username=auth.current_user()).first()
-    post = Post.query.get(blog_id)
-    if not post:
-        return "No post was found with this id", 400
-    if post.user_id != user.id:
-        return "You can only access your posts", 401
+        return token is not None
 
-    post_json = {
-        'author': user.username,
-        'date': post.create_date,
-        'text': post.text
-    }    
-
-    return post_json, 200
-
-@app.route('/api/blog/<int:blog_id>', methods=['DELETE'])
-@auth.login_required
-def delete_post(blog_id: int):
-    user = User.query.filter_by(username=auth.current_user()).first()
-    post = Post.query.get(blog_id)
-
-    if not post:
-        return "No post was found with this id", 400
-    if post.user_id != user.id:
-        return "You can only delete your posts", 401
-
-    Post.query.filter_by(id=blog_id).delete()
-    db.session.commit()
-    return "Post successfuly deleted", 200    
-
-@app.route('/api/blog/<int:blog_id>', methods=['PATCH'])
-@auth.login_required
-def update_post(blog_id: int):
-    new_text = request.get_json()['text']
-
-    user = User.query.filter_by(username=auth.current_user()).first()
-    post = Post.query.filter_by(id=blog_id).first()
-
-    if not post:
-        return "No post was found with this id", 400
-    if post.user_id != user.id:
-        return "You can only update your posts", 401
-
-    post.text = new_text
-    db.session.commit()
-
-    return "Post successfuly updated", 200
-
-if __name__ == "__main__":
-    app.run(port=5020, debug=True)
+    return app
